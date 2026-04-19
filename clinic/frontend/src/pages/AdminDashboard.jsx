@@ -20,9 +20,18 @@ export default function AdminDashboard() {
   const [userSearch, setUserSearch] = useState('')
   const [userRoleFilter, setUserRoleFilter] = useState('')
   const [apptSearch, setApptSearch] = useState('')
+  const [apptStatusFilter, setApptStatusFilter] = useState('')
   const [cancelTarget, setCancelTarget] = useState(null)
+  const [confirmTarget, setConfirmTarget] = useState(null)
   const [deactivateTarget, setDeactivateTarget] = useState(null)
   const [selectedUser, setSelectedUser] = useState(null)
+  const [actionMsg, setActionMsg] = useState('')
+  const [resetUserId, setResetUserId] = useState(null)
+  const [resetUsername, setResetUsername] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [resetMsg, setResetMsg] = useState('')
+  const [resetError, setResetError] = useState('')
+  const [resetLoading, setResetLoading] = useState(false)
   const [newRecord, setNewRecord] = useState({ patient: '', record_title: '', data: '' })
   const [recordSuccess, setRecordSuccess] = useState('')
   const [recordError, setRecordError] = useState('')
@@ -50,36 +59,74 @@ export default function AdminDashboard() {
   }, [userSearch, userRoleFilter])
   const loadAppointments = useCallback(async () => {
     try {
-      const params = apptSearch ? `?search=${apptSearch}` : ''
-      const r = await api.get(`/appointments/${params}`)
+      const params = new URLSearchParams()
+      if (apptSearch) params.append('search', apptSearch)
+      if (apptStatusFilter) params.append('status', apptStatusFilter)
+      const r = await api.get(`/appointments/?${params}`)
       setAppointments(r.data)
     } catch (_) {}
-  }, [apptSearch])
+  }, [apptSearch, apptStatusFilter])
 
   useEffect(() => { loadNotifications(); loadStats(); loadAppointments() }, [])
   useEffect(() => { if (tab === 'Users') loadUsers() }, [tab, userSearch, userRoleFilter])
-  useEffect(() => { if (tab === 'Appointments') loadAppointments() }, [tab, apptSearch])
+  useEffect(() => { if (tab === 'Appointments' || tab === 'Overview') loadAppointments() }, [tab, apptSearch, apptStatusFilter])
 
   const confirmCancel = async () => {
     if (!cancelTarget) return
     try {
       await api.post(`/appointments/${cancelTarget}/cancel/`)
+      setActionMsg('Appointment cancelled. Both patient and doctor have been notified.')
       loadAppointments(); loadStats()
     } catch (_) {}
     setCancelTarget(null)
   }
 
+  const confirmConfirm = async () => {
+    if (!confirmTarget) return
+    try {
+      await api.post(`/appointments/${confirmTarget}/confirm/`)
+      setActionMsg('Appointment confirmed. Patient has been notified.')
+      loadAppointments(); loadStats()
+    } catch (err) {
+      setActionMsg(err.response?.data?.error || 'Failed to confirm.')
+    }
+    setConfirmTarget(null)
+  }
+
+  const handleStatusChange = async (apptId, newStatus) => {
+    try {
+      await api.post(`/appointments/${apptId}/update-status/`, { status: newStatus })
+      setActionMsg(`Status updated to "${newStatus}".`)
+      loadAppointments(); loadStats()
+    } catch (err) {
+      setActionMsg(err.response?.data?.error || 'Failed to update status.')
+    }
+  }
+
   const confirmDeactivate = async () => {
     if (!deactivateTarget) return
-    try {
-      await api.post(`/users/${deactivateTarget.id}/deactivate/`)
-      loadUsers()
-    } catch (_) {}
+    try { await api.post(`/users/${deactivateTarget.id}/deactivate/`); loadUsers() } catch (_) {}
     setDeactivateTarget(null)
   }
 
   const restoreUser = async (id) => {
     try { await api.post(`/users/${id}/restore/`); loadUsers() } catch (_) {}
+  }
+
+  const openResetPassword = (u) => {
+    setResetUserId(u.id); setResetUsername(u.username)
+    setNewPassword(''); setResetMsg(''); setResetError('')
+  }
+
+  const handleResetPassword = async (e) => {
+    e.preventDefault()
+    setResetMsg(''); setResetError(''); setResetLoading(true)
+    try {
+      const res = await api.post(`/users/${resetUserId}/reset-password/`, { new_password: newPassword })
+      setResetMsg(res.data.message); setNewPassword('')
+    } catch (err) {
+      setResetError(err.response?.data?.error || 'Failed to reset password.')
+    } finally { setResetLoading(false) }
   }
 
   const handleSaveRecord = async (e) => {
@@ -91,14 +138,57 @@ export default function AdminDashboard() {
       setNewRecord({ patient: '', record_title: '', data: '' })
     } catch (err) {
       const d = err.response?.data
-      setRecordError(typeof d === 'object' ? Object.values(d).flat().join(' ') : 'Failed to save record.')
+      setRecordError(typeof d === 'object' ? Object.values(d).flat().join(' ') : 'Failed.')
     }
   }
 
   const handleLogout = async () => { await logout(); navigate('/login', { replace: true }) }
 
-  const statusBadge = (s) => <span className={`badge badge-${s}`}>{s}</span>
-  const boldCell = { color: '#000', fontWeight: 'bold' }
+  const statusBadge = (s) => {
+    const colors = {
+      pending: 'badge-pending',
+      confirmed: 'badge-confirmed',
+      cancelled: 'badge-cancelled',
+      completed: 'badge-completed',
+    }
+    return <span className={`badge ${colors[s] || 'badge-pending'}`}>{s}</span>
+  }
+
+  const bold = { color: '#000', fontWeight: 'bold' }
+
+  const AppointmentActions = ({ a }) => (
+    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+      {a.status === 'pending' && (
+        <button className="btn-primary"
+          style={{ padding: '3px 10px', fontSize: 12, background: '#16a34a' }}
+          onClick={() => setConfirmTarget(a.id)}>
+          ✓ Confirm
+        </button>
+      )}
+      {(a.status === 'pending' || a.status === 'confirmed') && (
+        <button className="btn-danger"
+          style={{ padding: '3px 10px', fontSize: 12 }}
+          onClick={() => setCancelTarget(a.id)}>
+          ✕ Cancel
+        </button>
+      )}
+      {/* Admin status dropdown */}
+      <select
+        value={a.status}
+        onChange={e => handleStatusChange(a.id, e.target.value)}
+        style={{
+          fontSize: 12, padding: '3px 6px', border: '1px solid #e5e7eb',
+          borderRadius: 6, color: '#000', fontWeight: 'bold',
+          background: 'white', cursor: 'pointer',
+        }}
+      >
+        <option value="pending">Pending</option>
+        <option value="confirmed">Confirmed</option>
+        <option value="cancelled">Cancelled</option>
+        <option value="completed">Completed</option>
+      </select>
+    </div>
+  )
 
   const sidebarItems = [
     { label: 'Overview', icon: '📊' },
@@ -143,58 +233,47 @@ export default function AdminDashboard() {
           <NotificationBell notifications={notifications} onMarkRead={loadNotifications} />
         </div>
 
-        {/* Overview */}
+        {actionMsg && (
+          <div className="alert-success" style={{ marginBottom: 16 }}>
+            {actionMsg}
+            <button onClick={() => setActionMsg('')}
+              style={{ float: 'right', background: 'none', border: 'none',
+                cursor: 'pointer', fontWeight: 700, color: '#065f46' }}>✕</button>
+          </div>
+        )}
+
+        {/* OVERVIEW */}
         {tab === 'Overview' && (
           <>
             <div className="stats-grid">
-              <div className="stat-card">
-                <div className="stat-number">{stats.total_patients ?? '—'}</div>
-                <div className="stat-label">Total Patients</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-number">{stats.total_doctors ?? '—'}</div>
-                <div className="stat-label">Total Doctors</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-number">{stats.total_appointments ?? '—'}</div>
-                <div className="stat-label">Total Appointments</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-number" style={{ color: '#f59e0b' }}>{stats.pending ?? '—'}</div>
-                <div className="stat-label">Pending</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-number" style={{ color: '#16a34a' }}>{stats.confirmed ?? '—'}</div>
-                <div className="stat-label">Confirmed</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-number" style={{ color: '#dc2626' }}>{stats.cancelled ?? '—'}</div>
-                <div className="stat-label">Cancelled</div>
-              </div>
+              {[
+                ['Total Patients', stats.total_patients, '#16a34a'],
+                ['Total Doctors', stats.total_doctors, '#16a34a'],
+                ['Total Appointments', stats.total_appointments, '#16a34a'],
+                ['Pending', stats.pending, '#f59e0b'],
+                ['Confirmed', stats.confirmed, '#16a34a'],
+                ['Cancelled', stats.cancelled, '#dc2626'],
+              ].map(([label, val, color]) => (
+                <div className="stat-card" key={label}>
+                  <div className="stat-number" style={{ color }}>{val ?? '—'}</div>
+                  <div className="stat-label">{label}</div>
+                </div>
+              ))}
             </div>
-
             <div className="card">
               <div className="card-title">📅 Recent Appointments</div>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Patient</th><th>Doctor</th><th>Date</th><th>Time</th><th>Status</th><th>Action</th></tr></thead>
+                  <thead><tr><th>Patient</th><th>Doctor</th><th>Date</th><th>Time</th><th>Status</th><th>Actions</th></tr></thead>
                   <tbody>
                     {appointments.slice(0, 10).map(a => (
                       <tr key={a.id}>
-                        <td style={boldCell}>{a.patient_name}</td>
-                        <td style={boldCell}>Dr. {a.doctor_name}</td>
-                        <td style={boldCell}>{a.date}</td>
-                        <td style={boldCell}>{a.time}</td>
+                        <td style={bold}>{a.patient_name}</td>
+                        <td style={bold}>Dr. {a.doctor_name}</td>
+                        <td style={bold}>{a.date}</td>
+                        <td style={bold}>{a.time}</td>
                         <td>{statusBadge(a.status)}</td>
-                        <td>
-                          {(a.status === 'pending' || a.status === 'confirmed') && (
-                            <button className="btn-danger"
-                              style={{ padding: '4px 12px', fontSize: 12 }}
-                              onClick={() => setCancelTarget(a.id)}>
-                              Cancel
-                            </button>
-                          )}
-                        </td>
+                        <td><AppointmentActions a={a} /></td>
                       </tr>
                     ))}
                     {appointments.length === 0 && (
@@ -207,23 +286,15 @@ export default function AdminDashboard() {
           </>
         )}
 
-        {/* Users */}
+        {/* USERS */}
         {tab === 'Users' && (
           <div className="card">
             <div className="card-title">👥 Manage Users</div>
             <div className="search-bar">
-              <input
-                type="text"
-                placeholder="Search users…"
-                value={userSearch}
-                style={{ color: '#000', fontWeight: 'bold' }}
-                onChange={e => setUserSearch(e.target.value)}
-              />
-              <select
-                value={userRoleFilter}
-                style={{ color: '#000', fontWeight: 'bold', maxWidth: 160 }}
-                onChange={e => setUserRoleFilter(e.target.value)}
-              >
+              <input type="text" placeholder="Search users…" value={userSearch}
+                style={bold} onChange={e => setUserSearch(e.target.value)} />
+              <select value={userRoleFilter} style={{ ...bold, maxWidth: 160 }}
+                onChange={e => setUserRoleFilter(e.target.value)}>
                 <option value="">All Roles</option>
                 <option value="patient">Patients</option>
                 <option value="doctor">Doctors</option>
@@ -231,51 +302,52 @@ export default function AdminDashboard() {
               </select>
               <button className="btn-primary" onClick={loadUsers}>Search</button>
             </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: selectedUser ? '1fr 340px' : '1fr', gap: 20 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: selectedUser ? '1fr 320px' : '1fr', gap: 20 }}>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Username</th><th>Full Name</th><th>Role</th><th>Email</th><th>Status</th><th>Actions</th></tr></thead>
+                  <thead><tr><th>Username</th><th>Full Name</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead>
                   <tbody>
                     {users.map(u => (
-                      <tr key={u.id} style={{ cursor: 'pointer' }}>
-                        <td style={boldCell} onClick={() => setSelectedUser(u)}>{u.username}</td>
-                        <td style={boldCell} onClick={() => setSelectedUser(u)}>{u.first_name} {u.last_name}</td>
-                        <td style={boldCell}>
+                      <tr key={u.id}>
+                        <td style={{ ...bold, cursor: 'pointer', color: '#16a34a' }}
+                          onClick={() => setSelectedUser(u)}>{u.username}</td>
+                        <td style={bold}>{u.first_name} {u.last_name}</td>
+                        <td>
                           <span className={`badge ${u.role === 'doctor' ? 'badge-confirmed' : u.role === 'admin' ? 'badge-completed' : 'badge-pending'}`}>
                             {u.role}
                           </span>
                         </td>
-                        <td style={boldCell}>{u.email}</td>
                         <td>
                           <span className={`badge ${u.is_active ? 'badge-active' : 'badge-inactive'}`}>
                             {u.is_active ? 'Active' : 'Inactive'}
                           </span>
                         </td>
-                        <td>
+                        <td style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {u.is_active ? (
                             <button className="btn-danger"
                               style={{ padding: '4px 10px', fontSize: 12 }}
-                              onClick={() => setDeactivateTarget(u)}>
-                              Deactivate
-                            </button>
+                              onClick={() => setDeactivateTarget(u)}>Deactivate</button>
                           ) : (
                             <button className="btn-outline"
                               style={{ padding: '4px 10px', fontSize: 12 }}
-                              onClick={() => restoreUser(u.id)}>
-                              Restore
-                            </button>
+                              onClick={() => restoreUser(u.id)}>Restore</button>
                           )}
+                          <button
+                            style={{ padding: '4px 10px', fontSize: 12, background: '#fef3c7',
+                              color: '#92400e', border: '1px solid #fcd34d', borderRadius: 6,
+                              cursor: 'pointer', fontWeight: 700 }}
+                            onClick={() => openResetPassword(u)}>
+                            🔑 Reset PW
+                          </button>
                         </td>
                       </tr>
                     ))}
                     {users.length === 0 && (
-                      <tr><td colSpan={6} style={{ textAlign: 'center', color: '#9ca3af' }}>No users found</td></tr>
+                      <tr><td colSpan={5} style={{ textAlign: 'center', color: '#9ca3af' }}>No users found</td></tr>
                     )}
                   </tbody>
                 </table>
               </div>
-
               {selectedUser && (
                 <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 20, background: '#fafafa' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -303,40 +375,36 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* Appointments */}
+        {/* APPOINTMENTS */}
         {tab === 'Appointments' && (
           <div className="card">
             <div className="card-title">📅 All Appointments</div>
             <div className="search-bar">
-              <input
-                type="text"
-                placeholder="Search by patient or doctor…"
-                value={apptSearch}
-                style={{ color: '#000', fontWeight: 'bold' }}
-                onChange={e => setApptSearch(e.target.value)}
-              />
+              <input type="text" placeholder="Search by patient or doctor…"
+                value={apptSearch} style={bold}
+                onChange={e => setApptSearch(e.target.value)} />
+              <select value={apptStatusFilter} style={{ ...bold, maxWidth: 160 }}
+                onChange={e => setApptStatusFilter(e.target.value)}>
+                <option value="">All Statuses</option>
+                <option value="pending">Pending</option>
+                <option value="confirmed">Confirmed</option>
+                <option value="cancelled">Cancelled</option>
+                <option value="completed">Completed</option>
+              </select>
               <button className="btn-primary" onClick={loadAppointments}>Search</button>
             </div>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Patient</th><th>Doctor</th><th>Date</th><th>Time</th><th>Status</th><th>Action</th></tr></thead>
+                <thead><tr><th>Patient</th><th>Doctor</th><th>Date</th><th>Time</th><th>Status</th><th>Actions</th></tr></thead>
                 <tbody>
                   {appointments.map(a => (
                     <tr key={a.id}>
-                      <td style={boldCell}>{a.patient_name}</td>
-                      <td style={boldCell}>Dr. {a.doctor_name}</td>
-                      <td style={boldCell}>{a.date}</td>
-                      <td style={boldCell}>{a.time}</td>
+                      <td style={bold}>{a.patient_name}</td>
+                      <td style={bold}>Dr. {a.doctor_name}</td>
+                      <td style={bold}>{a.date}</td>
+                      <td style={bold}>{a.time}</td>
                       <td>{statusBadge(a.status)}</td>
-                      <td>
-                        {(a.status === 'pending' || a.status === 'confirmed') && (
-                          <button className="btn-danger"
-                            style={{ padding: '4px 12px', fontSize: 12 }}
-                            onClick={() => setCancelTarget(a.id)}>
-                            Cancel
-                          </button>
-                        )}
-                      </td>
+                      <td><AppointmentActions a={a} /></td>
                     </tr>
                   ))}
                   {appointments.length === 0 && (
@@ -348,7 +416,7 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* Records */}
+        {/* RECORDS */}
         {tab === 'Records' && (
           <div className="card">
             <div className="card-title">📋 Add Medical Record</div>
@@ -369,7 +437,7 @@ export default function AdminDashboard() {
               </div>
               <div className="form-group">
                 <label>Record Data *</label>
-                <textarea rows={6} placeholder="Enter medical record data (will be encrypted)…" required
+                <textarea rows={6} placeholder="Enter data (will be encrypted)…" required
                   value={newRecord.data}
                   onChange={e => setNewRecord(r => ({ ...r, data: e.target.value }))} />
               </div>
@@ -383,20 +451,46 @@ export default function AdminDashboard() {
 
       {showLogout && <LogoutModal onConfirm={handleLogout} onCancel={() => setShowLogout(false)} />}
       {cancelTarget && (
-        <ConfirmModal
-          title="Cancel Appointment"
-          message="Cancel this appointment? Both the patient AND doctor will be notified via real-time notification."
-          onConfirm={confirmCancel}
-          onCancel={() => setCancelTarget(null)}
-        />
+        <ConfirmModal title="Cancel Appointment"
+          message="Cancel this appointment? Both patient and doctor will be notified."
+          onConfirm={confirmCancel} onCancel={() => setCancelTarget(null)} />
+      )}
+      {confirmTarget && (
+        <ConfirmModal title="Confirm Appointment"
+          message="Confirm this appointment? The patient will be notified."
+          onConfirm={confirmConfirm} onCancel={() => setConfirmTarget(null)} danger={false} />
       )}
       {deactivateTarget && (
-        <ConfirmModal
-          title="Deactivate User"
-          message={`Deactivate user "${deactivateTarget.username}"? They will no longer be able to log in.`}
-          onConfirm={confirmDeactivate}
-          onCancel={() => setDeactivateTarget(null)}
-        />
+        <ConfirmModal title="Deactivate User"
+          message={`Deactivate "${deactivateTarget.username}"? They cannot log in.`}
+          onConfirm={confirmDeactivate} onCancel={() => setDeactivateTarget(null)} />
+      )}
+      {resetUserId && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h2>🔑 Reset Password</h2>
+            <p>Set a new password for <strong>{resetUsername}</strong>.</p>
+            {resetMsg && <div className="alert-success">{resetMsg}</div>}
+            {resetError && <div className="alert-error">{resetError}</div>}
+            <form onSubmit={handleResetPassword}>
+              <div className="form-group">
+                <label>New Password (min 6 characters)</label>
+                <input type="password" placeholder="Enter new password"
+                  value={newPassword} onChange={e => setNewPassword(e.target.value)}
+                  required minLength={6} style={bold} />
+              </div>
+              <div className="modal-actions">
+                <button type="button" className="btn-secondary"
+                  onClick={() => { setResetUserId(null); setResetMsg(''); setResetError('') }}>
+                  Close
+                </button>
+                <button type="submit" className="btn-primary" disabled={resetLoading}>
+                  {resetLoading ? 'Resetting…' : 'Reset Password'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   )

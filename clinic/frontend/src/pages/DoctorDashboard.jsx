@@ -8,8 +8,6 @@ import ConfirmModal from '../components/ConfirmModal'
 import NotificationBell from '../components/NotificationBell'
 import MessagingPanel from '../components/MessagingPanel'
 
-const TABS = ['Schedule', 'Patients', 'Records', 'Appointments', 'Messages']
-
 export default function DoctorDashboard() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
@@ -20,12 +18,14 @@ export default function DoctorDashboard() {
   const [patients, setPatients] = useState([])
   const [records, setRecords] = useState([])
   const [cancelTarget, setCancelTarget] = useState(null)
+  const [confirmTarget, setConfirmTarget] = useState(null)
   const [selectedPatient, setSelectedPatient] = useState(null)
   const [patientPrescriptions, setPatientPrescriptions] = useState([])
   const [prescForm, setPrescForm] = useState({ diagnosis: '', medicines: '', notes: '', appointment: '' })
   const [prescError, setPrescError] = useState('')
   const [prescSuccess, setPrescSuccess] = useState('')
   const [savingPresc, setSavingPresc] = useState(false)
+  const [actionMsg, setActionMsg] = useState('')
 
   const handleWsNotif = useCallback((data) => {
     if (data.type === 'initial_notifications') setNotifications(data.notifications || [])
@@ -90,16 +90,37 @@ export default function DoctorDashboard() {
     if (!cancelTarget) return
     try {
       await api.post(`/appointments/${cancelTarget}/cancel/`)
+      setActionMsg('Appointment cancelled. Patient has been notified.')
       loadAppointments()
     } catch (_) {}
     setCancelTarget(null)
   }
 
+  const confirmConfirm = async () => {
+    if (!confirmTarget) return
+    try {
+      await api.post(`/appointments/${confirmTarget}/confirm/`)
+      setActionMsg('Appointment confirmed. Patient has been notified.')
+      loadAppointments()
+    } catch (err) {
+      setActionMsg(err.response?.data?.error || 'Failed to confirm.')
+    }
+    setConfirmTarget(null)
+  }
+
   const handleLogout = async () => { await logout(); navigate('/login', { replace: true }) }
 
-  const statusBadge = (s) => <span className={`badge badge-${s}`}>{s}</span>
+  const statusBadge = (s) => {
+    const colors = {
+      pending: 'badge-pending',
+      confirmed: 'badge-confirmed',
+      cancelled: 'badge-cancelled',
+      completed: 'badge-completed',
+    }
+    return <span className={`badge ${colors[s] || 'badge-pending'}`}>{s}</span>
+  }
 
-  // Today + next 3 days for Schedule tab
+  // Today + next 3 days
   const today = new Date()
   const next3Days = [0, 1, 2, 3].map(i => {
     const d = new Date(today); d.setDate(today.getDate() + i)
@@ -114,6 +135,33 @@ export default function DoctorDashboard() {
     { label: 'Appointments', icon: '📅' },
     { label: 'Messages', icon: '💬' },
   ]
+
+  const ActionButtons = ({ appointment }) => {
+    const canAct = appointment.status === 'pending' || appointment.status === 'confirmed'
+    return (
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {appointment.status === 'pending' && (
+          <button
+            className="btn-primary"
+            style={{ padding: '4px 12px', fontSize: 12, background: '#16a34a' }}
+            onClick={() => setConfirmTarget(appointment.id)}
+          >
+            ✓ Confirm
+          </button>
+        )}
+        {canAct && (
+          <button
+            className="btn-danger"
+            style={{ padding: '4px 12px', fontSize: 12 }}
+            onClick={() => setCancelTarget(appointment.id)}
+          >
+            ✕ Cancel
+          </button>
+        )}
+        {!canAct && <span style={{ color: '#9ca3af', fontSize: 12, fontWeight: 700 }}>—</span>}
+      </div>
+    )
+  }
 
   return (
     <div className="dashboard-layout">
@@ -150,16 +198,29 @@ export default function DoctorDashboard() {
           <NotificationBell notifications={notifications} onMarkRead={loadNotifications} />
         </div>
 
+        {actionMsg && (
+          <div className="alert-success" style={{ marginBottom: 16 }}>
+            {actionMsg}
+            <button onClick={() => setActionMsg('')}
+              style={{ float: 'right', background: 'none', border: 'none',
+                cursor: 'pointer', fontWeight: 700, color: '#065f46' }}>✕</button>
+          </div>
+        )}
+
         {/* Schedule */}
         {tab === 'Schedule' && (
           <div className="card">
             <div className="card-title">📆 Today & Next 3 Days</div>
             {scheduleAppointments.length === 0 ? (
-              <p style={{ color: '#9ca3af', fontWeight: 600, fontSize: 14 }}>No upcoming appointments in the next 3 days.</p>
+              <p style={{ color: '#9ca3af', fontWeight: 600, fontSize: 14 }}>
+                No upcoming appointments in the next 3 days.
+              </p>
             ) : (
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Date</th><th>Time</th><th>Patient</th><th>Status</th><th>Notes</th><th>Action</th></tr></thead>
+                  <thead>
+                    <tr><th>Date</th><th>Time</th><th>Patient</th><th>Status</th><th>Notes</th><th>Actions</th></tr>
+                  </thead>
                   <tbody>
                     {scheduleAppointments.map(a => (
                       <tr key={a.id}>
@@ -168,15 +229,7 @@ export default function DoctorDashboard() {
                         <td>{a.patient_name}</td>
                         <td>{statusBadge(a.status)}</td>
                         <td>{a.notes || '—'}</td>
-                        <td>
-                          {(a.status === 'pending' || a.status === 'confirmed') && (
-                            <button className="btn-danger"
-                              style={{ padding: '4px 12px', fontSize: 12 }}
-                              onClick={() => setCancelTarget(a.id)}>
-                              Cancel
-                            </button>
-                          )}
-                        </td>
+                        <td><ActionButtons appointment={a} /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -195,16 +248,17 @@ export default function DoctorDashboard() {
                 <p style={{ color: '#9ca3af', fontWeight: 600, fontSize: 14 }}>No assigned patients yet.</p>
               ) : (
                 patients.map(p => (
-                  <div key={p.id}
-                    onClick={() => handleSelectPatient(p)}
+                  <div key={p.id} onClick={() => handleSelectPatient(p)}
                     style={{
-                      padding: '12px 14px', borderRadius: 8, border: '1px solid #e5e7eb',
+                      padding: '12px 14px', borderRadius: 8,
+                      border: `1px solid ${selectedPatient?.id === p.id ? '#16a34a' : '#e5e7eb'}`,
                       marginBottom: 10, cursor: 'pointer',
                       background: selectedPatient?.id === p.id ? '#f0fdf4' : 'white',
-                      transition: 'background 0.15s',
+                      transition: 'all 0.15s',
                     }}>
                     <div style={{ fontWeight: 700, color: '#000', fontSize: 14 }}>
-                      {p.first_name} {p.last_name} <span style={{ color: '#6b7280', fontWeight: 600 }}>(@{p.username})</span>
+                      {p.first_name} {p.last_name}
+                      <span style={{ color: '#6b7280', fontWeight: 600 }}> (@{p.username})</span>
                     </div>
                     <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3, fontWeight: 'bold' }}>{p.email}</div>
                   </div>
@@ -215,10 +269,8 @@ export default function DoctorDashboard() {
             {selectedPatient && (
               <div className="card">
                 <div className="card-title">💊 Prescriptions — {selectedPatient.first_name} {selectedPatient.last_name}</div>
-
                 {prescError && <div className="alert-error">{prescError}</div>}
                 {prescSuccess && <div className="alert-success">{prescSuccess}</div>}
-
                 <form onSubmit={handleSavePrescription}>
                   <div className="form-group">
                     <label>Diagnosis *</label>
@@ -250,8 +302,8 @@ export default function DoctorDashboard() {
                     </div>
                     {patientPrescriptions.map(p => (
                       <div key={p.id} style={{
-                        border: '1px solid #e5e7eb', borderRadius: 8, padding: 12,
-                        marginBottom: 8, background: '#fafafa',
+                        border: '1px solid #e5e7eb', borderRadius: 8,
+                        padding: 12, marginBottom: 8, background: '#fafafa',
                       }}>
                         <div style={{ fontWeight: 700, color: '#000', fontSize: 13 }}>{p.diagnosis}</div>
                         <div style={{ fontSize: 12, color: '#374151', fontWeight: 'bold',
@@ -273,12 +325,12 @@ export default function DoctorDashboard() {
           <div className="card">
             <div className="card-title">📋 Patient Medical Records</div>
             {records.length === 0 ? (
-              <p style={{ color: '#9ca3af', fontWeight: 600, fontSize: 14 }}>No records found for your patients.</p>
+              <p style={{ color: '#9ca3af', fontWeight: 600, fontSize: 14 }}>No records found.</p>
             ) : (
               records.map(r => (
                 <div key={r.id} style={{
-                  border: '1px solid #e5e7eb', borderRadius: 8, padding: 16,
-                  marginBottom: 12, background: '#fafafa',
+                  border: '1px solid #e5e7eb', borderRadius: 8,
+                  padding: 16, marginBottom: 12, background: '#fafafa',
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
                     <span style={{ fontWeight: 700, fontSize: 15, color: '#000' }}>{r.record_title}</span>
@@ -303,7 +355,9 @@ export default function DoctorDashboard() {
             <div className="card-title">📅 All My Appointments</div>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Patient</th><th>Date</th><th>Time</th><th>Status</th><th>Notes</th><th>Action</th></tr></thead>
+                <thead>
+                  <tr><th>Patient</th><th>Date</th><th>Time</th><th>Status</th><th>Notes</th><th>Actions</th></tr>
+                </thead>
                 <tbody>
                   {appointments.map(a => (
                     <tr key={a.id}>
@@ -312,15 +366,7 @@ export default function DoctorDashboard() {
                       <td>{a.time}</td>
                       <td>{statusBadge(a.status)}</td>
                       <td>{a.notes || '—'}</td>
-                      <td>
-                        {(a.status === 'pending' || a.status === 'confirmed') && (
-                          <button className="btn-danger"
-                            style={{ padding: '4px 12px', fontSize: 12 }}
-                            onClick={() => setCancelTarget(a.id)}>
-                            Cancel
-                          </button>
-                        )}
-                      </td>
+                      <td><ActionButtons appointment={a} /></td>
                     </tr>
                   ))}
                   {appointments.length === 0 && (
@@ -342,6 +388,15 @@ export default function DoctorDashboard() {
           message="Cancel this appointment? The patient will be notified immediately."
           onConfirm={confirmCancel}
           onCancel={() => setCancelTarget(null)}
+        />
+      )}
+      {confirmTarget && (
+        <ConfirmModal
+          title="Confirm Appointment"
+          message="Confirm this appointment? The patient will be notified that their appointment is confirmed."
+          onConfirm={confirmConfirm}
+          onCancel={() => setConfirmTarget(null)}
+          danger={false}
         />
       )}
     </div>
